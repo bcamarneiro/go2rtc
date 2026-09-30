@@ -27,12 +27,21 @@ const (
 
 const spaceVelocityGeneric = "http://www.onvif.org/ver10/tptz/PanTiltSpaces/VelocityGenericSpace"
 
-// PTZ reports whether the stream `name` can pan/tilt. nil means no stream can,
-// and the server then advertises no PTZ service at all.
-var PTZ func(name string) bool
+// PTZ reports whether the stream `name` can pan/tilt; it decides which profiles
+// carry a PTZ configuration. PTZAny reports whether any stream currently can;
+// it decides whether the PTZ service is advertised at all (GetCapabilities,
+// GetServices). Both nil means no PTZ.
+var (
+	PTZ    func(name string) bool
+	PTZAny func() bool
+)
 
 func hasPTZ(name string) bool {
 	return PTZ != nil && PTZ(name)
+}
+
+func hasAnyPTZ() bool {
+	return PTZAny != nil && PTZAny()
 }
 
 func appendPTZConfiguration(e *Envelope, tag, name string) {

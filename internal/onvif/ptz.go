@@ -36,18 +36,31 @@ const (
 const maxMove = 10 * time.Second
 
 func initPTZ() {
-	onvif.PTZ = func(name string) bool {
-		stream := streams.Get(name)
-		if stream == nil {
-			return false
-		}
-		for _, src := range stream.Sources() {
-			if strings.HasPrefix(src, "xiaomi:") {
+	onvif.PTZ = hasMotor
+	onvif.PTZAny = func() bool {
+		for _, name := range streams.GetAllNames() {
+			if hasMotor(name) {
 				return true
 			}
 		}
 		return false
 	}
+}
+
+// hasMotor reports whether the stream is configured with a source that can
+// pan/tilt. It looks at the config, not at live connections, so the ONVIF
+// profile stays stable while the camera reconnects.
+func hasMotor(name string) bool {
+	stream := streams.Get(name)
+	if stream == nil {
+		return false
+	}
+	for _, src := range stream.Sources() {
+		if strings.HasPrefix(src, "xiaomi:") {
+			return true
+		}
+	}
+	return false
 }
 
 func motor(name string, operation int) error {
@@ -67,18 +80,38 @@ func (e ptzError) Error() string { return string(e) }
 
 const errNoMotor = ptzError("onvif: ptz: stream has no connected source with a motor")
 
+// move is one running ContinuousMove. The pointer identifies the owner: a
+// goroutine only removes its own entry, never a replacement's (see endMove).
+type move struct {
+	cancel context.CancelFunc
+}
+
 var (
-	moves   = map[string]context.CancelFunc{}
+	moves   = map[string]*move{}
 	movesMu sync.Mutex
 )
 
+// stopMove cancels whatever move is running for the stream (Stop, or a new
+// ContinuousMove replacing the old one).
 func stopMove(name string) {
 	movesMu.Lock()
-	if cancel := moves[name]; cancel != nil {
-		cancel()
+	if m := moves[name]; m != nil {
+		m.cancel()
 		delete(moves, name)
 	}
 	movesMu.Unlock()
+}
+
+// endMove is the move goroutine's own cleanup. By the time it runs, a newer
+// ContinuousMove may already own the map entry, so only remove it if it is
+// still ours.
+func endMove(name string, m *move) {
+	movesMu.Lock()
+	if moves[name] == m {
+		delete(moves, name)
+	}
+	movesMu.Unlock()
+	m.cancel()
 }
 
 func isMoving(name string) bool {
@@ -96,12 +129,13 @@ func startMove(name string, x, y float64) {
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), maxMove)
+	m := &move{cancel: cancel}
 	movesMu.Lock()
-	moves[name] = cancel
+	moves[name] = m
 	movesMu.Unlock()
 
 	go func() {
-		defer stopMove(name)
+		defer endMove(name, m)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
@@ -160,12 +194,25 @@ func motorSteps(x, y float64) (ops []int, interval time.Duration) {
 	return ops, interval
 }
 
-var reVelocity = regexp.MustCompile(`PanTilt[^>]*?\bx="([^"]+)"[^>]*?\by="([^"]+)"`)
+// The PanTilt element of a ContinuousMove, then its x and y attributes. They are
+// matched separately because attribute order is not significant in XML and
+// clients differ in the order (and quote style) they serialise.
+var (
+	rePanTilt = regexp.MustCompile(`<[^>]*\bPanTilt\b[^>]*>`)
+	reX       = regexp.MustCompile(`\bx=["']([^"']*)["']`)
+	reY       = regexp.MustCompile(`\by=["']([^"']*)["']`)
+)
 
 func parseVelocity(b []byte) (x, y float64) {
-	if m := reVelocity.FindSubmatch(b); m != nil {
+	tag := rePanTilt.Find(b)
+	if tag == nil {
+		return
+	}
+	if m := reX.FindSubmatch(tag); m != nil {
 		x, _ = strconv.ParseFloat(string(m[1]), 64)
-		y, _ = strconv.ParseFloat(string(m[2]), 64)
+	}
+	if m := reY.FindSubmatch(tag); m != nil {
+		y, _ = strconv.ParseFloat(string(m[1]), 64)
 	}
 	return
 }

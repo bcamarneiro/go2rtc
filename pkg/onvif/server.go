@@ -70,7 +70,7 @@ func GetCapabilitiesResponse(host string) []byte {
 				<tt:RTP_RTSP_TCP>true</tt:RTP_RTSP_TCP>
 			</tt:StreamingCapabilities>
 		</tt:Media>`, host, host)
-	if PTZ != nil {
+	if hasAnyPTZ() {
 		e.Appendf(`
 		<tt:PTZ>
 			<tt:XAddr>http://%s%s</tt:XAddr>
@@ -95,7 +95,7 @@ func GetServicesResponse(host string) []byte {
 		<tds:XAddr>http://%s/onvif/media_service</tds:XAddr>
 		<tds:Version><tt:Major>2</tt:Major><tt:Minor>5</tt:Minor></tds:Version>
 	</tds:Service>`, host, host)
-	if PTZ != nil {
+	if hasAnyPTZ() {
 		e.Appendf(`
 	<tds:Service>
 		<tds:Namespace>http://www.onvif.org/ver20/ptz/wsdl</tds:Namespace>
